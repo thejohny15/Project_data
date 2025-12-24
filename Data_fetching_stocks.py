@@ -45,7 +45,7 @@ TICKERS = [
 # ========================================================
 # 2. Download prices safely using the new yfinance behavior
 # ========================================================
-def download_prices(tickers, start="2015-01-01"):
+def download_prices(tickers, start="2014-01-01"):
     logger.info(f"Starting download for {len(tickers)} tickers…")
 
     all_data = {}
@@ -97,32 +97,31 @@ def download_prices(tickers, start="2015-01-01"):
 # ========================================================
 # 3. Convert prices → daily simple returns
 # ========================================================
-def build_return_panel(all_data: dict):
+def build_return_panel(all_data: dict, freq: str = "D"):
     logger.info("Aligning price series…")
-    price_df = pd.DataFrame(all_data)
-    (price_df == 0).any()
-    zero_price_mask = (price_df == 0).any()
-    print("Any zero prices per ticker:")
-    print(zero_price_mask)
-
-
+    price_df = pd.DataFrame(all_data).sort_index()
     logger.info(f"Raw price panel shape: {price_df.shape}")
 
-    # SIMPLE RETURNS = pct change
-    returns = price_df.pct_change()
+    # Daily simple returns from prices
+    daily_returns = price_df.pct_change()
 
-    # drop days where ALL stocks have NaN (market holidays)
+    if freq.upper() in ["W", "W-FRI", "WEEKLY"]:
+        # Weekly returns = compounded daily returns within each week (Fri-anchored)
+        returns = (1.0 + daily_returns).resample("W-FRI").prod() - 1.0
+    else:
+        # Daily returns
+        returns = daily_returns
+
+    # Drop periods where ALL stocks are NaN
     returns = returns.dropna(how="all")
 
     logger.info(f"Final return panel shape: {returns.shape}")
-
     return returns
-
 
 # ========================================================
 # 4. Save to Excel
 # ========================================================
-def save_to_excel(returns, filename="StockReturns.xlsx"):
+def save_to_excel(returns, filename="StockReturns2.xlsx"):
     logger.info(f"Saving return panel to {filename}…")
     returns.to_excel(filename, sheet_name="StockReturns")
     logger.success(f"Saved successfully as {filename}")
@@ -132,14 +131,14 @@ def save_to_excel(returns, filename="StockReturns.xlsx"):
 # MAIN
 # ========================================================
 if __name__ == "__main__":
-    all_data, failed = download_prices(TICKERS, start="2015-01-01")
-
+    all_data, failed = download_prices(TICKERS, start="2014-01-01")
     if failed:
         logger.warning("Some tickers failed to download:")
         for f in failed:
             logger.warning(f"- {f}")
         logger.warning("You can rerun the script if needed.")
 
-    returns = build_return_panel(all_data)
-    save_to_excel(returns)
-
+    returns2 = build_return_panel(all_data, freq="D")
+    returns = build_return_panel(all_data, freq="W-FRI")
+    save_to_excel(returns, filename="StockReturns2Weekly.xlsx")
+    save_to_excel(returns2, filename="StockReturns_Daily2.xlsx")
