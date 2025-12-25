@@ -10,24 +10,24 @@ from models.linear_model import fit_ridge, predict
 from evaluation.walk_forward import walk_forward_splits
 
 # --------------------------------------------------
-# 1. Load data
+# 1. Load paths
 # --------------------------------------------------
 
 BETAS_PATH   = "data/RollingBetas_smoothed_daily.csv"
 RETURNS_PATH = "StockReturns_Daily2.xlsx"
 SECTOR_PATH  = "data/sector_map.csv"
 
-betas = pd.read_csv(BETAS_PATH)
-returns = pd.read_excel("StockReturns_Daily2.xlsx", sheet_name="StockReturns")
-sector_map = pd.read_csv(SECTOR_PATH)
+# --------------------------------------------------
+# 2. Load + standardize BETAS (wide)
+# --------------------------------------------------
 
-# --------------------------------------------------
-# 2. Clean & standardize columns
-# --------------------------------------------------
+betas = pd.read_csv(BETAS_PATH)
 
 betas = betas.rename(columns={
     "Date": "date",
     "ticker": "stock",
+    "Stock": "stock",
+
     "Macro_FX_PC1": "beta_fx_pc1",
     "TSFL Commodities": "beta_commodities",
     "TSFL Credit": "beta_credit",
@@ -43,89 +43,103 @@ betas = betas.rename(columns={
     "TSFL Real Estate": "beta_real_estate",
     "TSFL Small Cap": "beta_size",
     "TSFL US Inflation": "beta_us_inflation",
-
 })
 
 betas["date"] = pd.to_datetime(betas["date"])
-returns["date"] = pd.to_datetime(returns["date"])
 
 # --------------------------------------------------
-# 3. Build features (X)
+# 3. Load + reshape RETURNS (wide → long)
+# --------------------------------------------------
+
+returns = pd.read_excel(RETURNS_PATH)
+returns = returns.rename(columns={"Date": "date"})
+returns["date"] = pd.to_datetime(returns["date"])
+
+returns_long = (
+    returns
+    .melt(id_vars="date", var_name="stock", value_name="return")
+    .dropna()
+)
+
+# --------------------------------------------------
+# 4. Align returns to beta availability (start only)
+# --------------------------------------------------
+
+start_date = betas["date"].min()
+returns_long = returns_long[returns_long["date"] >= start_date]
+
+# --------------------------------------------------
+# 5. Load sector map
+# --------------------------------------------------
+
+sector_map = pd.read_csv(SECTOR_PATH)
+sector_map = sector_map.rename(columns={"Stock": "stock"})
+
+# --------------------------------------------------
+# 6. Build features and target
 # --------------------------------------------------
 
 X = build_features(betas)
+y = build_weekly_target(returns_long, sector_map)
 
 # --------------------------------------------------
-# 4. Build target (y)
-# --------------------------------------------------
-
-y = build_weekly_target(returns, sector_map)
-
-# --------------------------------------------------
-# 5. Merge panel
+# 7. Merge panel
 # --------------------------------------------------
 
 data = (
     X.merge(y, on=["date", "stock"], how="inner")
-      .sort_values(["date", "stock"])
-      .reset_index(drop=True)
+     .sort_values(["date", "stock"])
+     .reset_index(drop=True)
 )
 
-# Drop rows with missing values (from rolling / diff)
-data = data.dropna()
-
 # --------------------------------------------------
-# 6. Sanity checks (MANDATORY)
+# 8. Enforce strict 55-stock universe (drop 1 edge date)
 # --------------------------------------------------
 
-# same number of stocks every day
+counts = data.groupby("date")["stock"].nunique()
+valid_dates = counts[counts == 55].index
+data = data[data["date"].isin(valid_dates)]
+
 assert data.groupby("date")["stock"].nunique().min() == 55
-
-# no duplicated rows
 assert not data.duplicated(subset=["date", "stock"]).any()
 
 # --------------------------------------------------
-# 7. Define feature columns
+# 9. Feature columns
 # --------------------------------------------------
 
-feature_cols = [
-    c for c in data.columns
-    if c.startswith("beta_") or c.startswith("d_beta_")
-]
+feature_cols = [c for c in data.columns if c.startswith("beta_") or c.startswith("d_beta_")]
 
 # --------------------------------------------------
-# 8. Walk-forward training & prediction
+# 10. Walk-forward training & prediction
 # --------------------------------------------------
 
 dates = sorted(data["date"].unique())
 predictions = []
 
-for train_dates, test_date in walk_forward_splits(
-    dates,
-    min_train_size=500,   # ~2 years
-    step=1
-):
+for train_dates, test_date in walk_forward_splits(dates, min_train_size=500):
+
     train = data[data["date"].isin(train_dates)]
     test  = data[data["date"] == test_date]
 
-    X_train = train[feature_cols]
-    y_train = train["y"]
+    # Drop rows with missing features in TRAIN
+    train_clean = train.dropna(subset=feature_cols + ["y"])
 
-    X_test = test[feature_cols]
-
-    # ---- Fit baseline model
-    model = fit_ridge(X_train, y_train, alpha=1.0)
-
-    # ---- Predict cross-sectional scores
-    test = test.copy()
-    test["score"] = predict(model, X_test)
-
-    predictions.append(
-        test[["date", "stock", "score"]]
+    model = fit_ridge(
+        train_clean[feature_cols],
+        train_clean["y"],
+        alpha=1.0
     )
 
+    # Predict only where features are available
+    test_clean = test.dropna(subset=feature_cols)
+
+    test = test.loc[test_clean.index].copy()
+    test["score"] = predict(model, test_clean[feature_cols])
+
+    predictions.append(test[["date", "stock", "score"]])
+
 # --------------------------------------------------
-# 9. Collect predictions
+# 11. Collect predictions
 # --------------------------------------------------
 
 predictions = pd.concat(predictions).reset_index(drop=True)
@@ -133,3 +147,21 @@ predictions = pd.concat(predictions).reset_index(drop=True)
 print("Walk-forward completed.")
 print("Prediction dates:", predictions["date"].nunique())
 print(predictions.head())
+
+# --------------------------------------------------
+# 12. Information Coefficient evaluation
+# --------------------------------------------------
+
+from evaluation.ic import compute_daily_ic, summarize_ic
+
+ic_df = compute_daily_ic(
+    predictions=predictions,
+    targets=y,
+    method="spearman"
+)
+
+ic_stats = summarize_ic(ic_df)
+
+print("\nInformation Coefficient (Spearman):")
+for k, v in ic_stats.items():
+    print(f"{k}: {v:.4f}")

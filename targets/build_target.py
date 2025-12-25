@@ -1,39 +1,31 @@
 # targets/build_target.py
 
 import pandas as pd
-import numpy as np
 from config import HORIZON_DAYS
 
-def build_weekly_target(returns, sector_map):
+def build_weekly_target(returns_long, sector_map):
     """
-    returns: DataFrame with columns [date, stock, return]
-    sector_map: DataFrame with columns [stock, sector]
+    Builds HORIZON_DAYS forward return target.
     """
 
-    # merge sector info
-    df = returns.merge(sector_map, on="stock", how="left")
+    df = returns_long.copy()
 
-    # compute forward 5-day return
-    df["R_fwd"] = (
-        df.groupby("stock")["return"]
-        .rolling(HORIZON_DAYS)
-        .sum()
-        .shift(-HORIZON_DAYS)
-        .reset_index(level=0, drop=True)
-    )
+    # Merge sector information
+    df = df.merge(sector_map, on="stock", how="left")
 
-    # sector demeaning
-    df["R_sector_mean"] = (
-        df.groupby(["date", "sector"])["R_fwd"]
-        .transform("mean")
-    )
+    # Sort properly
+    df = df.sort_values(["stock", "date"])
 
-    df["R_rel"] = df["R_fwd"] - df["R_sector_mean"]
-
-    # cross-sectional standardization
+    # Forward HORIZON_DAYS return
     df["y"] = (
-        df.groupby("date")["R_rel"]
-        .transform(lambda x: (x - x.mean()) / x.std())
+        df.groupby("stock")["return"]
+          .rolling(HORIZON_DAYS)
+          .sum()
+          .shift(-HORIZON_DAYS)
+          .reset_index(level=0, drop=True)
     )
 
-    return df[["date", "stock", "y"]]
+    # Drop rows where target is undefined (last HORIZON_DAYS per stock)
+    df = df.dropna(subset=["y"])
+
+    return df[["date", "stock", "y", "sector"]]
