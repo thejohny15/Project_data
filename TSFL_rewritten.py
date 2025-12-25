@@ -456,15 +456,15 @@ def main() -> None:
     # 4) Save outputs (same output files as earlier)
     raw_df.to_excel("raw_daily_factor_returns.xlsx")
     cleaned_df.to_excel("raw_daily_factor_returns_renamed.xlsx")
-    tsfl.to_excel(args.excel_out, sheet_name="TSFL_2S_Factors")
+    tsfl.to_excel("data/tsfl_2s_factors_daily.xlsx", sheet_name="TSFL_2S_Factors")
 
     corr = tsfl.corr()
-    corr.to_excel("tsfl_2s_factors_daily_correlation.xlsx")
+    corr.to_excel("data/tsfl_2s_factors_daily_correlation.xlsx")
 
     plot_corr_heatmap(
         corr,
         title="TSFL 2-Stage DAILY Factor Correlations (Momentum/Quality adjusted)",
-        filename="corr_tsfl_2s_factors_daily.png",
+        filename="data/corr_tsfl_2s_factors_daily.png",
     )
 
     logger.success("Saved DAILY TSFL factors to {}", args.excel_out)
